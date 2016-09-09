@@ -16,6 +16,8 @@ import:
     version: v0.1.0
   - package: github.com/akutz/golf
     version: v0.1.1
+  - package: github.com/emccode/gournal
+    version: v0.2.0
   - package: github.com/cesanta/validate-json
 
 ################################################################################
@@ -34,7 +36,13 @@ import:
 
 ### Isilon
   - package: github.com/emccode/goisilon
-    ref:     f9b53f0aaadb12a26b134830142fc537f492cb13
+    version: v1.4.0
+
+### EFS
+  - package: github.com/aws/aws-sdk-go
+    version: v1.2.2
+    repo:    https://github.com/aws/aws-sdk-go
+
 
 ################################################################################
 ##                             Build System Tools                             ##
