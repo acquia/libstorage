@@ -7,6 +7,7 @@ import (
 	//_ "github.com/emccode/libstorage/drivers/storage/gce/executor"
 	_ "github.com/emccode/libstorage/drivers/storage/isilon/executor"
 	//_ "github.com/emccode/libstorage/drivers/storage/openstack/executor"
+	_ "github.com/emccode/libstorage/drivers/storage/objectivefs/executor"
 	_ "github.com/emccode/libstorage/drivers/storage/scaleio/executor"
 	_ "github.com/emccode/libstorage/drivers/storage/vbox/executor"
 	_ "github.com/emccode/libstorage/drivers/storage/vfs/executor"
