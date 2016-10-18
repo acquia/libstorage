@@ -1,11 +1,128 @@
+SHELL := /bin/bash
+
 all:
+# if docker is running, then let's use docker to build it
+ifneq (,$(shell if docker version &> /dev/null; then echo -; fi))
+	$(MAKE) docker-build
+else
 	$(MAKE) deps
 	$(MAKE) build
+endif
+
+################################################################################
+##                                  DOCKER                                    ##
+################################################################################
+ifneq (,$(shell if docker version &> /dev/null; then echo -; fi))
+
+DPKG := github.com/emccode/libstorage
+DIMG := golang:1.7.1
+DGOHOSTOS := $(shell uname -s | tr A-Z a-z)
+ifeq (undefined,$(origin DGOOS))
+DGOOS := $(DGOHOSTOS)
+endif
+DGOARCH := amd64
+DPRFX := build-libstorage
+DNAME := $(DPRFX)
+ifeq (1,$(DBUILD_ONCE))
+DNAME := $(DNAME)-$(shell date +%s)
+endif
+DPATH := /go/src/$(DPKG)
+DSRCS := $(shell git ls-files)
+ifneq (,$(DGLIDE_YAML))
+DSRCS := $(filter-out glide.yaml,$(DSRCS))
+DSRCS := $(filter-out glide.lock,$(DSRCS))
+DSRCS := $(filter-out glide.lock.d,$(DSRCS))
+endif
+DPROG1_NAME := lss-$(DGOOS)
+DPROG1_PATH := /go/bin/$(DPROG1_NAME)
+DPROG2_NAME := lsx-$(DGOOS)
+DPROG2_PATH := /go/bin/$(DPROG2_NAME)
+ifneq (linux,$(DGOOS))
+DPROG1_PATH := /go/bin/$(DGOOS)_$(DGOARCH)/$(DPROG1_NAME)
+DPROG2_PATH := /go/bin/$(DGOOS)_$(DGOARCH)/$(DPROG2_NAME)
+endif
+ifeq (darwin,$(DGOHOSTOS))
+DTARC := -
+endif
+DIMG_EXISTS := docker images --format '{{.Repository}}:{{.Tag}}' | grep $(DIMG) &> /dev/null
+DTO_CLOBBER := docker ps -a --format '{{.Names}}' | grep $(DPRFX)
+DNETRC := $(HOME)/.netrc
+
+# DLOCAL_IMPORTS specifics a list of imported packages to copy into the
+# container build's vendor directory instead of what is specified in the
+# glide.lock file. If this variable is set and the GOPATH variable is not
+# then the target will fail.
+ifeq (undefined,$(DLOCAL_IMPORTS))
+DLOCAL_IMPORTS :=
+endif
+ifneq (,$(DLOCAL_IMPORTS))
+ifneq (,$(GOPATH))
+DLOCAL_IMPORTS_FILES := $(foreach I,$(DLOCAL_IMPORTS),$(addprefix $I/,$(shell git --git-dir=$(GOPATH)/src/$(I)/.git --work-tree=$(GOPATH)/src/$(I) ls-files)))
+DLOCAL_IMPORTS_FILES += $(foreach I,$(DLOCAL_IMPORTS),$I/.git)
+endif
+endif
+
+docker-init:
+	@if ! $(DIMG_EXISTS); then docker pull $(DIMG); fi
+	@docker run --name $(DNAME) -d $(DIMG) /sbin/init -D &> /dev/null || true && \
+		docker exec $(DNAME) mkdir -p $(DPATH) && \
+		tar -c $(DTARC) .git $(DSRCS) | docker cp - $(DNAME):$(DPATH)
+ifneq (,$(DGLIDE_YAML))
+	@docker cp $(DGLIDE_YAML) $(DNAME):$(DPATH)/glide.yaml
+endif
+ifneq (,$(wildcard $(DNETRC)))
+	@docker cp $(DNETRC) $(DNAME):/root
+endif
+	docker exec -t $(DNAME) env make -C $(DPATH) deps
+ifneq (,$(DLOCAL_IMPORTS))
+ifeq (,$(GOPATH))
+	@echo GOPATH must be set when using DLOCAL_IMPORTS && false
+else
+	@docker exec -t $(DNAME) rm -fr $(addprefix $(DPATH)/vendor/,$(DLOCAL_IMPORTS))
+	@tar -C $(GOPATH)/src -c $(DTARC) $(DLOCAL_IMPORTS_FILES) | docker cp - $(DNAME):$(DPATH)/vendor
+endif
+endif
+	docker exec -t $(DNAME) env GOOS=$(DGOOS) GOARCH=$(DGOARCH) DOCKER=1 make -C $(DPATH) -j build
+
+docker-build: docker-init
+	@docker cp $(DNAME):$(DPROG1_PATH) $(DPROG1_NAME)
+	@docker cp $(DNAME):$(DPROG2_PATH) $(DPROG2_NAME)
+	@bytes=$$(stat --format '%s' $(PROG) 2> /dev/null || \
+		stat -f '%z' $(DPROG1_NAME) 2> /dev/null) && mb=$$(($$bytes / 1024 / 1024)) && \
+		printf "\nThe $(DPROG1_NAME) binary is $${mb}MB and located at: \n\n" && \
+		printf "  ./$(DPROG1_NAME)\n\n"
+	@bytes=$$(stat --format '%s' $(PROG) 2> /dev/null || \
+		stat -f '%z' $(DPROG2_NAME) 2> /dev/null) && mb=$$(($$bytes / 1024 / 1024)) && \
+		printf "\nThe $(DPROG2_NAME) binary is $${mb}MB and located at: \n\n" && \
+		printf "  ./$(DPROG2_NAME)\n\n"
+ifeq (1,$(DBUILD_ONCE))
+	docker stop $(DNAME) &> /dev/null && docker rm $(DNAME) &> /dev/null
+endif
+
+docker-test: DGOOS=linux
+docker-test: DTEST_ENV_VARS=TRAVIS=true LIBSTORAGE_DISABLE_STARTUP_INFO=true
+docker-test: docker-init
+	docker exec -t $(DNAME) env $(DTEST_ENV_VARS) make -C $(DPATH) test
+
+docker-clean:
+	-docker stop $(DNAME) &> /dev/null && docker rm $(DNAME) &> /dev/null
+
+docker-clobber:
+	-CNAMES=$$($(DTO_CLOBBER)); if [ "$$CNAMES" != "" ]; then \
+		docker stop $$CNAMES && docker rm $$CNAMES; \
+	fi
+
+docker-list:
+	-$(DTO_CLOBBER)
+
+endif # ifneq (,$(shell if docker version &> /dev/null; then echo -; fi))
 
 
 ################################################################################
 ##                                 CONSTANTS                                  ##
 ################################################################################
+ifneq (,$(shell which go 2> /dev/null)) # if go exists
+
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
 ASTERIK := *
@@ -53,13 +170,38 @@ GO_STDLIB := archive archive/tar archive/zip bufio builtin bytes compress \
 GOPATH := $(shell go env | grep GOPATH | sed 's/GOPATH="\(.*\)"/\1/')
 GOHOSTOS := $(shell go env | grep GOHOSTOS | sed 's/GOHOSTOS="\(.*\)"/\1/')
 GOHOSTARCH := $(shell go env | grep GOHOSTARCH | sed 's/GOHOSTARCH="\(.*\)"/\1/')
+ifneq (,$(TRAVIS_GO_VERSION))
+GOVERSION := $(TRAVIS_GO_VERSION)
+else
+GOVERSION := $(shell go version | awk '{print $$3}' | cut -c3-)
+endif
+
+ifeq (1.7.1,$(TRAVIS_GO_VERSION))
+ifeq (linux,$(TRAVIS_OS_NAME))
+COVERAGE_ENABLED := 1
+endif
+endif
+
+# explicitly enable vendoring for Go 1.5.x versions.
+GO15VENDOREXPERIMENT := 1
+
+ifneq (,$(strip $(findstring 1.3.,$(TRAVIS_GO_VERSION))))
+PRE_GO15 := 1
+endif
+
+ifneq (,$(strip $(findstring 1.4.,$(TRAVIS_GO_VERSION))))
+PRE_GO15 := 1
+endif
+
+ifneq (1,$(PRE_GO15))
+export GO15VENDOREXPERIMENT
+endif
 
 
 ################################################################################
 ##                                  PATH                                      ##
 ################################################################################
-PATH := $(GOPATH)/bin:$(PATH)
-export $(PATH)
+export PATH := $(GOPATH)/bin:$(PATH)
 
 
 ################################################################################
@@ -69,6 +211,7 @@ export $(PATH)
 GO_LIST_BUILD_INFO_CMD := go list -f '{{with $$ip:=.}}{{with $$ctx:=context}}{{printf "%s %s %s %s %s 0,%s" $$ip.ImportPath $$ip.Name $$ip.Dir $$ctx.GOOS $$ctx.GOARCH (join $$ctx.BuildTags ",")}}{{end}}{{end}}'
 BUILD_INFO := $(shell $(GO_LIST_BUILD_INFO_CMD))
 ROOT_IMPORT_PATH := $(word 1,$(BUILD_INFO))
+ROOT_IMPORT_PATH_NV := $(ROOT_IMPORT_PATH)
 ROOT_IMPORT_NAME := $(word 2,$(BUILD_INFO))
 ROOT_DIR := $(word 3,$(BUILD_INFO))
 GOOS ?= $(word 4,$(BUILD_INFO))
@@ -79,6 +222,7 @@ BUILD_TAGS := $(wordlist 2,$(words $(BUILD_TAGS)),$(BUILD_TAGS))
 VENDORED := 0
 ifneq (,$(strip $(findstring vendor,$(ROOT_IMPORT_PATH))))
 VENDORED := 1
+ROOT_IMPORT_PATH_NV := $(shell echo $(ROOT_IMPORT_PATH) | sed 's/.*vendor\///g')
 endif
 
 
@@ -227,12 +371,16 @@ $(foreach i,\
 ################################################################################
 info:
 	$(info Project Import Path.........$(ROOT_IMPORT_PATH))
+ifeq (1,$(VENDORED))
+	$(info No Vendor Import Path.......$(ROOT_IMPORT_PATH_NV))
+endif
 	$(info Project Name................$(ROOT_IMPORT_NAME))
 	$(info OS / Arch...................$(GOOS)_$(GOARCH))
 	$(info Vendored....................$(VENDORED))
 	$(info GOPATH......................$(GOPATH))
 	$(info GOHOSTOS....................$(GOHOSTOS))
 	$(info GOHOSTARCH..................$(GOHOSTARCH))
+	$(info GOVERSION...................$(GOVERSION))
 ifneq (,$(strip $(SRCS)))
 	$(info Sources.....................$(patsubst ./%,%,$(firstword $(SRCS))))
 	$(foreach s,$(patsubst ./%,%,$(wordlist 2,$(words $(SRCS)),$(SRCS))),\
@@ -258,11 +406,10 @@ endif
 ################################################################################
 ##                               DEPENDENCIES                                 ##
 ################################################################################
-GO_BINDATA := $(GOPATH)/bin/go-bindata
-go-bindata: $(GO_BINDATA)
-
 GLIDE := $(GOPATH)/bin/glide
-GOGET_LOCK := goget.lock
+GLIDE_VER := 0.11.1
+GLIDE_TGZ := glide-v$(GLIDE_VER)-$(GOHOSTOS)-$(GOHOSTARCH).tar.gz
+GLIDE_URL := https://github.com/Masterminds/glide/releases/download/v$(GLIDE_VER)/$(GLIDE_TGZ)
 GLIDE_LOCK := glide.lock
 GLIDE_YAML := glide.yaml
 GLIDE_LOCK_D := glide.lock.d
@@ -275,25 +422,53 @@ ALL_EXT_DEPS := $(sort $(EXT_DEPS) $(TEST_EXT_DEPS))
 ALL_EXT_DEPS_SRCS := $(sort $(EXT_DEPS_SRCS) $(TEST_EXT_DEPS_SRCS))
 
 ifneq (1,$(VENDORED))
+
 $(GLIDE):
-	go get -u github.com/Masterminds/glide
+	@curl -SLO $(GLIDE_URL) && \
+		tar xzf $(GLIDE_TGZ) && \
+		rm -f $(GLIDE_TGZ) && \
+		mkdir -p $(GOPATH)/bin && \
+		mv $(GOHOSTOS)-$(GOHOSTARCH)/glide $(GOPATH)/bin && \
+		rm -fr $(GOHOSTOS)-$(GOHOSTARCH)
 glide: $(GLIDE)
 GO_DEPS += $(GLIDE)
 
 GO_DEPS += $(GLIDE_LOCK_D)
 $(ALL_EXT_DEPS_SRCS): $(GLIDE_LOCK_D)
 
+ifeq (,$(strip $(wildcard $(GLIDE_LOCK))))
+$(GLIDE_LOCK_D): $(GLIDE_LOCK) | $(GLIDE)
+	touch $@
+
+$(GLIDE_LOCK): $(GLIDE_YAML)
+	$(GLIDE) up
+
+else #ifeq (,$(strip $(wildcard $(GLIDE_LOCK))))
+
 $(GLIDE_LOCK_D): $(GLIDE_LOCK) | $(GLIDE)
 	$(GLIDE) install && touch $@
 
 $(GLIDE_LOCK): $(GLIDE_YAML)
-	touch $@
+	$(GLIDE) up && touch $@ && touch $(GLIDE_LOCK_D)
+
+endif #ifeq (,$(strip $(wildcard $(GLIDE_LOCK))))
+
+$(GLIDE_YAML):
+	$(GLIDE) init
 
 $(GLIDE_LOCK)-clean:
 	rm -f $(GLIDE_LOCK)
 GO_PHONY += $(GLIDE_LOCK)-clean
 GO_CLOBBER += $(GLIDE_LOCK)-clean
-endif
+
+endif #ifneq (1,$(VENDORED))
+
+
+################################################################################
+##                                GOBINDATA                                   ##
+################################################################################
+GO_BINDATA := $(GOPATH)/bin/go-bindata
+go-bindata: $(GO_BINDATA)
 
 GO_BINDATA_IMPORT_PATH := vendor/github.com/jteeuwen/go-bindata/go-bindata
 ifneq (1,$(VENDORED))
@@ -314,6 +489,10 @@ GO_DEPS += $(GO_BINDATA)
 ################################################################################
 ##                               GOMETALINTER                                 ##
 ################################################################################
+ifeq (1,$(PRE_GO15))
+GOMETALINTER_DISABLED := 1
+endif
+
 ifneq (1,$(GOMETALINTER_DISABLED))
 GOMETALINTER := $(GOPATH)/bin/gometalinter
 
@@ -358,16 +537,33 @@ gometalinter-all:
 	@echo gometalinter disabled
 endif
 
+
 ################################################################################
 ##                                  VERSION                                   ##
 ################################################################################
+
+# figure out the git dirs
+GIT_WORK:=.
+GIT_ROOT:=.git
+ifeq (1,$(VENDORED))
+ifneq (,$(wildcard $(HOME)/.glide))
+ROOT_IMPORT_PATH_DASH:=$(subst /,-,$(ROOT_IMPORT_PATH_NV))
+VGIT_WORK:=$(shell find $(HOME)/.glide -name "*$(ROOT_IMPORT_PATH_DASH)" -type d)
+ifneq (,$(wildcard $(VGIT_WORK)))
+GIT_WORK:=$(VGIT_WORK)
+ifneq (,$(wildcard $(VGIT_WORK)/.git))
+GIT_ROOT:=$(VGIT_WORK)/.git
+endif
+endif
+endif
+endif
 
 # parse a semver
 SEMVER_PATT := ^[^\d]*(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z].+?))?(?:-(\d+)-g(.+?)(?:-(dirty))?)?$$
 PARSE_SEMVER = $(shell echo $(1) | perl -pe 's/$(SEMVER_PATT)/$(2)/gim')
 
 # describe the git information and create a parsing function for it
-GIT_DESCRIBE := $(shell git describe --long --dirty)
+GIT_DESCRIBE := $(shell git --git-dir="$(GIT_ROOT)" --work-tree="$(GIT_WORK)" describe --long --dirty)
 PARSE_GIT_DESCRIBE = $(call PARSE_SEMVER,$(GIT_DESCRIBE),$(1))
 
 # parse the version components from the git information
@@ -384,14 +580,14 @@ V_ARCH := $(ARCH)
 V_OS_ARCH := $(V_OS)-$(V_ARCH)
 
 # the long commit hash
-V_SHA_LONG := $(shell git show HEAD -s --format=%H)
+V_SHA_LONG := $(shell git --git-dir="$(GIT_ROOT)" --work-tree="$(GIT_WORK)" show HEAD -s --format=%H)
 
 # the branch name, possibly from travis-ci
 ifeq ($(origin TRAVIS_BRANCH), undefined)
-	TRAVIS_BRANCH := $(shell git branch | grep '*')
+	TRAVIS_BRANCH := $(shell git --git-dir="$(GIT_ROOT)" --work-tree="$(GIT_WORK)" branch | grep '*')
 else
 ifeq (,$(strip $(TRAVIS_BRANCH)))
-	TRAVIS_BRANCH := $(shell git branch | grep '*')
+	TRAVIS_BRANCH := $(shell git --git-dir="$(GIT_ROOT)" --work-tree="$(GIT_WORK)" branch | grep '*')
 endif
 endif
 TRAVIS_BRANCH := $(subst $(ASTERIK) ,,$(TRAVIS_BRANCH))
@@ -766,10 +962,24 @@ GO_PHONY += $(COVERAGE)-clean
 
 cover: $(COVERAGE)
 ifneq (1,$(CODECOV_OFFLINE))
+ifeq (1,$(COVERAGE_ENABLED))
 	curl -sSL https://codecov.io/bash | bash -s -- -f $?
+else
+	@echo codecov enabled only for linux+go1.6.3
+endif
 else
 	@echo codecov offline
 endif
+
+.coverage.tools.d:
+ifeq (1,$(COVERAGE_ENABLED))
+	go get github.com/onsi/gomega \
+           github.com/onsi/ginkgo \
+           golang.org/x/tools/cmd/cover && touch $@
+else
+	go get golang.org/x/tools/cmd/cover && touch $@
+endif
+GO_DEPS += .coverage.tools.d
 
 cover-debug:
 	env LIBSTORAGE_DEBUG=true $(MAKE) cover
@@ -795,10 +1005,16 @@ build-generated:
 build:
 	$(MAKE) build-generated
 	$(MAKE) build-libstorage
+ifeq ($(GOOS),$(GOHOSTOS))
 	$(MAKE) libstor-c libstor-s
+endif
 	$(MAKE) build-lss
 
-test: $(GO_TEST)
+parallel-test: $(filter-out ./drivers/storage/vfs/%,$(GO_TEST))
+vfs-test: $(filter ./drivers/storage/vfs/%,$(GO_TEST))
+test:
+	$(MAKE) vfs-test
+	$(MAKE) -j parallel-test
 
 test-debug:
 	env LIBSTORAGE_DEBUG=true $(MAKE) test
@@ -807,18 +1023,6 @@ clean: $(GO_CLEAN)
 
 clobber: clean $(GO_CLOBBER)
 
-run: $(GOPATH)/bin/libstorage-mock-server
-	env LIBSTORAGE_RUN_HOST='tcp://127.0.0.1:7979' $?
+.PHONY: info clean clobber $(GO_PHONY)
 
-run-debug:
-	env LIBSTORAGE_DEBUG=true $(MAKE) run
-
-run-tls:
-	env LIBSTORAGE_RUN_TLS='true' $(MAKE) run
-
-run-tls-debug:
-	env LIBSTORAGE_RUN_TLS='true' $(MAKE) run-debug
-
-.PHONY: info clean clobber \
-		run run-debug run-tls run-tls-debug \
-		$(GO_PHONY)
+endif # ifneq (,$(shell which go 2> /dev/null))

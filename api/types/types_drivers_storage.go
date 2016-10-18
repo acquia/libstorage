@@ -24,6 +24,7 @@ type VolumeCreateOpts struct {
 	IOPS             *int64
 	Size             *int64
 	Type             *string
+	Encrypted        *bool
 	Opts             Store
 }
 
@@ -153,4 +154,14 @@ type StorageDriver interface {
 		ctx Context,
 		snapshotID string,
 		opts Store) error
+}
+
+// StorageDriverWithLogin is a StorageDriver with a Login function.
+type StorageDriverWithLogin interface {
+	StorageDriver
+
+	// Login creates a new connection to the storage platform for the provided
+	// context.
+	Login(
+		ctx Context) (interface{}, error)
 }

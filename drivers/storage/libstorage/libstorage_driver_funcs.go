@@ -116,6 +116,7 @@ func (d *driver) VolumeCreate(
 	req := &types.VolumeCreateRequest{
 		Name:             name,
 		AvailabilityZone: opts.AvailabilityZone,
+		Encrypted:        opts.Encrypted,
 		IOPS:             opts.IOPS,
 		Size:             opts.Size,
 		Type:             opts.Type,
@@ -216,8 +217,18 @@ func (d *driver) VolumeAttach(
 		return nil, "", goof.New("missing service name")
 	}
 
+	nextDevice, err := d.NextDevice(ctx, utils.NewStore())
+	if err != nil {
+		return nil, "", err
+	}
+
+	var nextDevicePtr *string
+	if nextDevice != "" {
+		nextDevicePtr = &nextDevice
+	}
+
 	req := &types.VolumeAttachRequest{
-		NextDeviceName: opts.NextDevice,
+		NextDeviceName: nextDevicePtr,
 		Force:          opts.Force,
 		Opts:           opts.Opts.Map(),
 	}

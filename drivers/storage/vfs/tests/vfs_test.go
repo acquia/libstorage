@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -380,12 +381,20 @@ func TestVolumeSnapshot(t *testing.T) {
 		assert.Equal(t, snapshotName, snap.Name)
 		assert.Equal(t, volumeID, snap.VolumeID)
 
-		snapshots, err := client.API().SnapshotsByService(nil, vfs.Name)
-		assert.NoError(t, err)
-		if err != nil {
-			t.FailNow()
+		snapCountEqual := false
+		for x := 0; x < 10; x++ {
+			time.Sleep(time.Duration(1) * time.Second)
+			snapshots, err := client.API().SnapshotsByService(nil, vfs.Name)
+			if !assert.NoError(t, err) {
+				t.FailNow()
+			}
+			if len(snapshots) != 10 {
+				continue
+			}
+			snapCountEqual = assert.EqualValues(t, 10, len(snapshots))
+			break
 		}
-		assert.EqualValues(t, 10, len(snapshots))
+		assert.True(t, snapCountEqual)
 	}
 	apitests.Run(t, vfs.Name, newTestConfig(t), tf)
 }
@@ -451,7 +460,7 @@ func TestVolumeAttach(t *testing.T) {
 		if reply == nil {
 			t.FailNow()
 		}
-		assert.Equal(t, "1234", attTokn)
+		assert.Equal(t, "/dev/xvdc", attTokn)
 		assert.Equal(t, "vfs-002", reply.ID)
 		assert.Equal(t, "/dev/xvdc", reply.Attachments[0].DeviceName)
 
@@ -707,7 +716,11 @@ func instanceID() (*types.InstanceID, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &types.InstanceID{ID: hostName, Driver: vfs.Name}, nil
+	iid := &types.InstanceID{ID: hostName, Driver: vfs.Name}
+	if ok, _ := strconv.ParseBool(os.Getenv("VFS_INSTANCEID_USE_FIELDS")); ok {
+		iid.Fields = map[string]string{"region": "east"}
+	}
+	return iid, nil
 }
 
 func assertVolDir(
